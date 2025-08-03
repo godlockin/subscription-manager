@@ -3017,22 +3017,129 @@ async function sendNotifyXNotification(title, content, description, config) {
       return false;
     }
 
-    console.log('[NotifyX] 开始发送通知: ' + title);
+    // 参数验证
+    if (!title || title.trim() === '') {
+      console.error('[NotifyX] 标题不能为空');
+      return false;
+    }
 
-    const url = 'https://www.notifyx.cn/api/v1/send/' + config.NOTIFYX_API_KEY;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: title,
-        content: content,
-        description: description || ''
-      })
+    const cleanTitle = title.trim();
+    const cleanContent = content ? content.trim() : '';
+    const cleanDescription = description ? description.trim() : '';
+
+    console.log('[NotifyX] 开始发送通知:', {
+      title: cleanTitle,
+      content: cleanContent.substring(0, 100) + (cleanContent.length > 100 ? '...' : ''),
+      description: cleanDescription.substring(0, 50) + (cleanDescription.length > 50 ? '...' : '')
     });
 
-    const result = await response.json();
-    console.log('[NotifyX] 发送结果:', result);
-    return result.status === 'queued';
+    // 按照官方文档的标准方式调用
+    const attempts = [
+      // 方式1: POST 方式 (官方推荐)
+      {
+        method: 'POST',
+        url: `https://www.notifyx.cn/api/v1/send/${config.NOTIFYX_API_KEY}`,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          title: cleanTitle,
+          content: cleanContent,
+          description: cleanDescription
+        },
+        name: 'POST (官方标准方式)'
+      },
+      // 方式2: GET 方式 (URL参数)
+      {
+        method: 'GET',
+        url: `https://www.notifyx.cn/api/v1/send/${config.NOTIFYX_API_KEY}`,
+        params: {
+          title: cleanTitle,
+          content: cleanContent,
+          description: cleanDescription
+        },
+        name: 'GET (URL参数方式)'
+      }
+    ];
+
+    for (let i = 0; i < attempts.length; i++) {
+      const attempt = attempts[i];
+      console.log(`[NotifyX] 尝试方式 ${i + 1} - ${attempt.name}`);
+
+      try {
+        let response;
+        
+        if (attempt.method === 'POST') {
+          // POST 方式
+          response = await fetch(attempt.url, {
+            method: 'POST',
+            headers: attempt.headers,
+            body: JSON.stringify(attempt.body)
+          });
+        } else {
+          // GET 方式
+          const params = new URLSearchParams(attempt.params);
+          const getUrl = `${attempt.url}?${params.toString()}`;
+          console.log(`[NotifyX] GET URL: ${getUrl}`);
+          response = await fetch(getUrl, {
+            method: 'GET'
+          });
+        }
+
+        console.log(`[NotifyX] 方式 ${i + 1} 响应状态:`, response.status, response.statusText);
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[NotifyX] 方式 ${i + 1} HTTP错误:`, response.status, errorText);
+          continue;
+        }
+
+        const responseText = await response.text();
+        console.log(`[NotifyX] 方式 ${i + 1} 原始响应:`, responseText);
+
+        // 尝试解析JSON响应
+        let result;
+        try {
+          result = JSON.parse(responseText);
+          console.log(`[NotifyX] 方式 ${i + 1} 解析后结果:`, result);
+        } catch (parseError) {
+          // 如果不是JSON，但状态码是200，也认为成功
+          if (response.status === 200) {
+            console.log(`[NotifyX] 方式 ${i + 1} 发送成功 - 非JSON响应但状态码200`);
+            return true;
+          }
+          console.error(`[NotifyX] 方式 ${i + 1} JSON解析失败:`, parseError.message);
+          continue;
+        }
+
+        // 检查是否有错误
+        if (result.error) {
+          console.error(`[NotifyX] 方式 ${i + 1} API返回错误:`, result.error);
+          continue;
+        }
+
+        // 多种成功判断条件
+        const isSuccess = result.status === 'queued' || 
+                         result.status === 'sent' ||
+                         result.status === 'delivered' ||
+                         result.status === 'success' || 
+                         result.success === true ||
+                         result.code === 200 ||
+                         result.code === 0 ||
+                         !result.error;
+
+        if (isSuccess) {
+          console.log(`[NotifyX] 方式 ${i + 1} 发送成功!`);
+          return true;
+        } else {
+          console.warn(`[NotifyX] 方式 ${i + 1} 发送可能失败:`, result);
+        }
+      } catch (error) {
+        console.error(`[NotifyX] 方式 ${i + 1} 网络异常:`, error.message);
+        continue;
+      }
+    }
+
+    console.error('[NotifyX] 所有发送方式都失败了');
+    return false;
   } catch (error) {
     console.error('[NotifyX] 发送通知失败:', error);
     return false;
